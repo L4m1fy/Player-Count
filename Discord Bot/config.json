@@ -1,0 +1,29 @@
+{
+  "api": {
+    "ip": "0.0.0.0",
+    "port": 65004
+  },
+  "servers": {
+    "server1": {
+      "name": "2x Duo Royalty",
+      "discordToken": "YOUR_DISCORD_BOT_TOKEN_1",
+      "hmacSecret": "your_secret_key_1",
+      "maxPlayers": 50,
+      "activityType": "Watching"
+    },
+    "server2": {
+      "name": "PvP Arena",
+      "discordToken": "YOUR_DISCORD_BOT_TOKEN_2",
+      "hmacSecret": "your_secret_key_2",
+      "maxPlayers": 100,
+      "activityType": "Playing"
+    },
+    "server3": {
+      "name": "Modded Server",
+      "discordToken": "YOUR_DISCORD_BOT_TOKEN_3",
+      "hmacSecret": "your_secret_key_3",
+      "maxPlayers": 75,
+      "activityType": "Watching"
+    }
+  }
+}
