@@ -176,7 +176,11 @@ function parseServersFromEnv() {
 const config = loadConfig();
 
 const app = express();
-app.use(express.json());
+app.use(express.json({
+    verify: (req, res, buf) => {
+        req.rawBody = buf.toString('utf8');
+    }
+}));
 
 const botClients = new Map();
 const serverStates = new Map();
