@@ -317,10 +317,6 @@ app.get('/health', (req, res) => {
 });
 
 app.get('/config', (req, res) => {
-    const safeConfig = {
-        api: config.api,
-        servers: {}
-    };
     
     for (const [id, srv] of Object.entries(config.servers)) {
         safeConfig.servers[id] = {
