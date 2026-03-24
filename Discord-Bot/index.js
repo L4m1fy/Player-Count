@@ -278,12 +278,12 @@ app.post('/api/update/:serverId', (req, res) => {
         .update(payload)
         .digest('hex');
 
-    console.log(`[${serverId}] HMAC Debug:`);
-    console.log(`  Secret: ${secret.substring(0, 4)}...${secret.substring(secret.length-4)}`);
-    console.log(`  Payload: ${payload}`);
-    console.log(`  Received HMAC: ${receivedHmac}`);
-    console.log(`  Computed HMAC: ${computedHmac}`);
-    console.log(`  Match: ${receivedHmac === computedHmac}`);
+    //console.log(`[${serverId}] HMAC Debug:`);
+    //console.log(`  Secret: ${secret.substring(0, 4)}...${secret.substring(secret.length-4)}`);
+    //console.log(`  Payload: ${payload}`);
+    //console.log(`  Received HMAC: ${receivedHmac}`);
+    //console.log(`  Computed HMAC: ${computedHmac}`);
+    //console.log(`  Match: ${receivedHmac === computedHmac}`);
 
     if (receivedHmac !== computedHmac) {
         console.log(`[${serverId}] HMAC verification failed`);
