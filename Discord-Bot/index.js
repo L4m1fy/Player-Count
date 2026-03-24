@@ -258,9 +258,15 @@ app.post('/api/update/:serverId', (req, res) => {
     }
 
     const serverConfig = config.servers[serverId];
-    const hmac = req.headers['x-hmac-sha256'];
-    const payload = JSON.stringify(req.body);
+    const receivedHmac = req.headers['x-hmac-sha256'];
     
+    const payload = req.rawBody;
+    
+    if (!payload) {
+        console.log(`[${serverId}] No raw body available`);
+        return res.status(400).send('Bad Request');
+    }
+
     const secret = serverConfig.hmacSecret || 'default-secret-change-me';
     
     const computedHmac = crypto
@@ -268,7 +274,14 @@ app.post('/api/update/:serverId', (req, res) => {
         .update(payload)
         .digest('hex');
 
-    if (hmac !== computedHmac) {
+    console.log(`[${serverId}] HMAC Debug:`);
+    console.log(`  Secret: ${secret.substring(0, 4)}...${secret.substring(secret.length-4)}`);
+    console.log(`  Payload: ${payload}`);
+    console.log(`  Received HMAC: ${receivedHmac}`);
+    console.log(`  Computed HMAC: ${computedHmac}`);
+    console.log(`  Match: ${receivedHmac === computedHmac}`);
+
+    if (receivedHmac !== computedHmac) {
         console.log(`[${serverId}] HMAC verification failed`);
         return res.status(401).send('Unauthorized');
     }
