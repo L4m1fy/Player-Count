@@ -414,14 +414,11 @@ async function sendChatToDiscord(serverId, playerName, message) {
     const s = state.get(serverId);
     if (!s?.livechatChannel) return;
 
-    const embed = new EmbedBuilder()
-        .setAuthor({ name: playerName })
-        .setDescription(message)
-        .setColor(0x55aaff)
-        .setTimestamp();
+    const unix    = Math.floor(Date.now() / 1000);
+    const content = `<t:${unix}:t> **${playerName}**: ${message}`;
 
     try {
-        await s.livechatChannel.send({ embeds: [embed] });
+        await s.livechatChannel.send(content);
     } catch (err) {
         console.error(`[${serverId}] Discord send failed:`, err.message);
     }
