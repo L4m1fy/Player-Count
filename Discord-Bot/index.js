@@ -67,10 +67,6 @@ const {
 } = require('discord.js');
 const WebSocket = require('ws');
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Config loading — env-first, config.json as fallback
-// ─────────────────────────────────────────────────────────────────────────────
-
 function loadConfig() {
     let fileCfg = { servers: {}, roles: [] };
     try {
@@ -147,10 +143,6 @@ function parseServersFromEnv() {
 
 const { servers, roles: globalRoles } = loadConfig();
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Per-server runtime state
-// ─────────────────────────────────────────────────────────────────────────────
-
 /**
  * @type {Map<string, {
  *   cfg:              object,
@@ -188,14 +180,12 @@ const pollTimers = new Map();
 const RECONNECT_MS = 10_000;
 const POLL_MS      = 60_000;
 
-// BrainChat emits:  [CHAT] DisplayName: message
 const CHAT_REGEX = /^\[CHAT\] (.+?): (.+)$/;
 
 function connectRcon(serverId) {
     const s = state.get(serverId);
     if (!s) return;
 
-    // Clean up existing socket
     if (s.ws) {
         try { s.ws.terminate(); } catch (_) {}
         s.ws = null;
@@ -228,7 +218,6 @@ function connectRcon(serverId) {
         s.online        = false;
         s.ws            = null;
         updatePresence(serverId);
-        // Reject any in-flight pending commands
         for (const [, reject] of s.pending) reject(new Error('RCON disconnected'));
         s.pending.clear();
         scheduleReconnect(serverId);
@@ -236,7 +225,6 @@ function connectRcon(serverId) {
 
     ws.on('error', err => {
         console.error(`[${serverId}] WebSocket RCON error: ${err.message}`);
-        // 'close' fires right after 'error', so reconnect is handled there
     });
 
     s.ws = ws;
@@ -252,25 +240,18 @@ function scheduleReconnect(serverId) {
     }, RECONNECT_MS);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Frame handler
-// ─────────────────────────────────────────────────────────────────────────────
-
 function handleRconFrame(serverId, frame) {
     const { Identifier: id, Message: msg, Type: type } = frame;
 
-    // Resolve a pending command promise
     const s = state.get(serverId);
     if (s && id > 0 && s.pending.has(id)) {
         const resolve = s.pending.get(id);
         s.pending.delete(id);
         resolve(msg ?? '');
-        return; // Don't double-process command responses
+        return;
     }
 
-    // Unsolicited server log lines (Identifier == -1) — look for [CHAT] prefix
     if (typeof msg === 'string') {
-        // Strip Rust timestamp prefix:  "12:34:56 | ..."
         const stripped = msg.replace(/^\d{2}:\d{2}:\d{2} \| /, '').trim();
         const chatMatch = CHAT_REGEX.exec(stripped);
         if (chatMatch) {
@@ -279,10 +260,6 @@ function handleRconFrame(serverId, frame) {
         }
     }
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// RCON send — returns a Promise that resolves with the response string
-// ─────────────────────────────────────────────────────────────────────────────
 
 function rconSend(serverId, cmd) {
     const s = state.get(serverId);
@@ -302,7 +279,6 @@ function rconSend(serverId, cmd) {
             }
         });
 
-        // Safety timeout — resolve with empty string after 10 s
         setTimeout(() => {
             if (s.pending.has(id)) {
                 s.pending.delete(id);
@@ -311,10 +287,6 @@ function rconSend(serverId, cmd) {
         }, 10_000);
     });
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Player count polling
-// ─────────────────────────────────────────────────────────────────────────────
 
 function startPolling(serverId) {
     if (pollTimers.has(serverId)) return;
@@ -335,15 +307,6 @@ async function pollPlayerCount(serverId) {
     } catch (_) {}
 }
 
-/**
- * Parses the output of the `status` RCON command.
- *
- * Example:
- *   hostname: Rusty Noobs US Main
- *   map     : Procedural Map
- *   players : 1 (5 max) (0 queued) (0 joining)
- *   76561198xxx "DHL" 125 76.62422s IP 0 0 0 ID
- */
 function parseStatus(serverId, raw) {
     const s = state.get(serverId);
     if (!s || !raw) return;
@@ -383,10 +346,6 @@ function parseStatus(serverId, raw) {
     s.players = playerRows;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Discord presence
-// ─────────────────────────────────────────────────────────────────────────────
-
 function updatePresence(serverId) {
     const s = state.get(serverId);
     if (!s?.client?.user) return;
@@ -406,10 +365,6 @@ function updatePresence(serverId) {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Game → Discord
-// ─────────────────────────────────────────────────────────────────────────────
-
 async function sendChatToDiscord(serverId, playerName, message) {
     const s = state.get(serverId);
     if (!s?.livechatChannel) return;
@@ -424,10 +379,6 @@ async function sendChatToDiscord(serverId, playerName, message) {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Discord → Game
-// ─────────────────────────────────────────────────────────────────────────────
-
 async function sendDiscordToGame(serverId, member, message) {
     const role    = resolveHighestRole(member);
     const user    = (member?.nickname || member?.user?.globalName || member?.user?.username || 'Unknown')
@@ -437,10 +388,6 @@ async function sendDiscordToGame(serverId, member, message) {
     await rconSend(serverId, `brainchat.discord ${role} ${user} ${safeMsg}`);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Role resolution
-// ─────────────────────────────────────────────────────────────────────────────
-
 function resolveHighestRole(member) {
     if (!member?.roles?.cache) return 'Member';
     for (const r of globalRoles) {
@@ -449,12 +396,17 @@ function resolveHighestRole(member) {
     return 'Member';
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Slash command registration
-// ─────────────────────────────────────────────────────────────────────────────
-
 async function registerSlashCommands(serverId) {
-    const s   = state.get(serverId);
+    const s = state.get(serverId);
+
+    const serverChoices = [
+        { name: 'All servers', value: 'all' },
+        ...Object.entries(servers).map(([id, cfg]) => ({
+            name:  cfg.name ?? id,
+            value: id,
+        })),
+    ];
+
     const cmd = new SlashCommandBuilder()
         .setName('send-to-server')
         .setDescription('Send a message into the Rust server(s) as a Discord message.')
@@ -464,8 +416,9 @@ async function registerSlashCommands(serverId) {
             .setRequired(true))
         .addStringOption(o => o
             .setName('server')
-            .setDescription('Server ID or name — omit to send to all servers')
-            .setRequired(false))
+            .setDescription('Which server to send to')
+            .setRequired(true)
+            .addChoices(...serverChoices))
         .toJSON();
 
     const rest = new REST({ version: '10' }).setToken(s.cfg.discordToken);
@@ -476,10 +429,6 @@ async function registerSlashCommands(serverId) {
         console.error(`[${serverId}] Slash command registration failed:`, err.message);
     }
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Bot setup
-// ─────────────────────────────────────────────────────────────────────────────
 
 async function setupBot(serverId, cfg) {
     const client = new Client({
@@ -498,7 +447,7 @@ async function setupBot(serverId, cfg) {
         rconConnected:   false,
         reconnectTimer:  null,
         nextId:          1,
-        pending:         new Map(),   // id → resolve fn
+        pending:         new Map(),
         currentPlayers:  0,
         maxPlayers:      cfg.maxPlayers ?? 100,
         hostname:        cfg.name ?? serverId,
@@ -508,7 +457,6 @@ async function setupBot(serverId, cfg) {
         livechatChannel: null,
     });
 
-    // ── Ready ────────────────────────────────────────────────────────────────
     client.on(Events.ClientReady, async () => {
         console.log(`[${serverId}] Bot ready: ${client.user.tag}`);
 
@@ -526,10 +474,9 @@ async function setupBot(serverId, cfg) {
 
         updatePresence(serverId);
         await registerSlashCommands(serverId);
-        connectRcon(serverId);   // Note: not awaited — connection is async/event-driven
+        connectRcon(serverId);
     });
 
-    // ── Discord message → Game ───────────────────────────────────────────────
     client.on(Events.MessageCreate, async msg => {
         if (msg.author.bot) return;
         const s = state.get(serverId);
@@ -545,13 +492,12 @@ async function setupBot(serverId, cfg) {
         await sendDiscordToGame(serverId, member, msg.content.trim());
     });
 
-    // ── Slash commands ───────────────────────────────────────────────────────
     client.on(Events.InteractionCreate, async interaction => {
         if (!interaction.isChatInputCommand()) return;
         if (interaction.commandName !== 'send-to-server') return;
 
-        const message   = interaction.options.getString('message', true);
-        const targetArg = interaction.options.getString('server', false);
+        const message  = interaction.options.getString('message', true);
+        const targetId = interaction.options.getString('server', true);
 
         await interaction.deferReply({ ephemeral: true });
 
@@ -568,18 +514,13 @@ async function setupBot(serverId, cfg) {
         const safeMsg = message.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
         const cmd     = `brainchat.discord ${role} ${user} ${safeMsg}`;
 
-        if (targetArg && targetArg.toLowerCase() !== 'all') {
-            const targetId = findServerId(targetArg);
-            if (!targetId) {
-                await interaction.editReply({ content: `❌ Unknown server: \`${targetArg}\`\nAvailable: ${[...state.keys()].join(', ')}` });
-                return;
-            }
-            await rconSend(targetId, cmd);
-            await interaction.editReply({ content: `✅ Sent to **${servers[targetId]?.name ?? targetId}**` });
-        } else {
+        if (targetId === 'all') {
             const targets = [...state.keys()];
             for (const id of targets) await rconSend(id, cmd);
-            await interaction.editReply({ content: `✅ Sent to **all ${targets.length} server(s)**` });
+            await interaction.editReply({ content: `Sent to **all ${targets.length} server(s)**` });
+        } else {
+            await rconSend(targetId, cmd);
+            await interaction.editReply({ content: `Sent to **${servers[targetId]?.name ?? targetId}**` });
         }
     });
 
@@ -592,10 +533,6 @@ async function setupBot(serverId, cfg) {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Utilities
-// ─────────────────────────────────────────────────────────────────────────────
-
 function findServerId(query) {
     if (servers[query]) return query;
     const lower = query.toLowerCase();
@@ -604,10 +541,6 @@ function findServerId(query) {
     }
     return null;
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Boot
-// ─────────────────────────────────────────────────────────────────────────────
 
 async function main() {
     console.log(`[RustBridge] Starting — ${Object.keys(servers).length} server(s), ${globalRoles.length} role(s)`);
