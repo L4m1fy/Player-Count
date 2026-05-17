@@ -8,11 +8,23 @@
  *    ##::::::: #########: ##. #: ##:::: ##::: ##...::::::: ##::::
  *    ##:::::::...... ##:: ##:.:: ##:::: ##::: ##:::::::::: ##::::
  *    ########::::::: ##:: ##:::: ##::'######: ##:::::::::: ##::::
- *    ........::::::::..:::..:::::..:::......::..:::......::..::::
+ *    ........::::::::..:::..:::::..:::......::..::::......::..::::
  *
  * ============================================================================
  *
- *                  [ RustBridge Bot - by L4m1fy - v1.1.0 ]
+ *                  [ RustBridge Bot - by L4m1fy - v1.2.0 ]
+ *
+ * ============================================================================
+ *
+ * CHANGES v1.2.0:
+ *  - Replaced rcon-client (TCP) with WebSocket RCON (ws package).
+ *    Rust's WebSocket RCON sends/receives JSON frames:
+ *      { Identifier: <int>, Message: "<cmd>", Type: "Request" }   ← send
+ *      { Identifier: <int>, Message: "<output>", Type: "Generic"|"Chat" } ← recv
+ *  - Authentication is done via the ws URL:
+ *      ws://<host>:<port>/<password>
+ *  - All other behaviour (livechat, polling, reconnect, Discord bridge) is
+ *    unchanged.
  *
  * ============================================================================
  *
@@ -31,7 +43,7 @@
  *
  * PER-SERVER (replace N with 1, 2, 3 ...):
  *
- *   SERVER_1_ID=server1                    — unique key, used in /send-to-server
+ *   SERVER_1_ID=server1                    — unique key
  *   SERVER_1_NAME=2x Duo Royalty           — display name
  *   SERVER_1_TOKEN=your_discord_bot_token
  *   SERVER_1_RCON_HOST=127.0.0.1
@@ -40,14 +52,6 @@
  *   SERVER_1_MAX_PLAYERS=100
  *   SERVER_1_ACTIVITY=Watching             — Watching | Playing | Listening
  *   SERVER_1_CHANNEL=discord_channel_id   — livechat channel
- *
- *   SERVER_2_ID=server2
- *   SERVER_2_NAME=PvP Arena
- *   SERVER_2_TOKEN=your_second_bot_token
- *   ... etc
- *
- * HOW MANY SERVERS: the bot auto-detects by scanning SERVER_1_, SERVER_2_ ...
- * until it finds a gap (or you can set SERVER_COUNT=3 to be explicit).
  *
  * ============================================================================
  */
@@ -61,14 +65,13 @@ const {
     Client, GatewayIntentBits, ActivityType, Events,
     REST, Routes, SlashCommandBuilder, EmbedBuilder
 } = require('discord.js');
-const { Rcon } = require('rcon-client');
+const WebSocket = require('ws');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Config loading — env-first, config.json as fallback
 // ─────────────────────────────────────────────────────────────────────────────
 
 function loadConfig() {
-    // ── 1. Try config.json as base ───────────────────────────────────────────
     let fileCfg = { servers: {}, roles: [] };
     try {
         const raw = fs.readFileSync(path.join(__dirname, 'config.json'), 'utf8');
@@ -78,8 +81,6 @@ function loadConfig() {
         console.log('[Config] No config.json found — using env only');
     }
 
-    // ── 2. Global roles ──────────────────────────────────────────────────────
-    //  Priority: ROLES_JSON env > config.json roles
     let roles = fileCfg.roles ?? [];
     if (process.env.ROLES_JSON) {
         try {
@@ -90,22 +91,17 @@ function loadConfig() {
         }
     }
 
-    // ── 3. Servers ───────────────────────────────────────────────────────────
-    //  Priority: individual SERVER_N_* env vars > SERVERS_JSON env > config.json
-
     let servers = fileCfg.servers ?? {};
 
-    // SERVERS_JSON override (full object)
     if (process.env.SERVERS_JSON) {
         try {
             servers = JSON.parse(process.env.SERVERS_JSON);
-            console.log(`[Config] Loaded servers from SERVERS_JSON`);
+            console.log('[Config] Loaded servers from SERVERS_JSON');
         } catch (e) {
             console.error('[Config] Failed to parse SERVERS_JSON:', e.message);
         }
     }
 
-    // Individual SERVER_N_* vars — these win over everything
     const envServers = parseServersFromEnv();
     if (Object.keys(envServers).length) {
         servers = envServers;
@@ -122,30 +118,27 @@ function loadConfig() {
 }
 
 function parseServersFromEnv() {
-    const servers = {};
-    const env     = process.env;
-
-    // Determine how many servers to look for
+    const servers  = {};
+    const env      = process.env;
     const maxCount = parseInt(env.SERVER_COUNT ?? '20', 10);
 
     for (let n = 1; n <= maxCount; n++) {
         const prefix = `SERVER_${n}_`;
         const token  = env[`${prefix}TOKEN`];
-        if (!token) break; // stop at first gap (no token = no server)
+        if (!token) break;
 
         const id = env[`${prefix}ID`] ?? `server${n}`;
-
         servers[id] = {
-            name:            env[`${prefix}NAME`]         ?? `Server ${n}`,
-            discordToken:    token,
+            name:               env[`${prefix}NAME`]         ?? `Server ${n}`,
+            discordToken:       token,
             rcon: {
-                host:        env[`${prefix}RCON_HOST`]    ?? '127.0.0.1',
-                port:        parseInt(env[`${prefix}RCON_PORT`] ?? '28016', 10),
-                password:    env[`${prefix}RCON_PASS`]    ?? '',
+                host:           env[`${prefix}RCON_HOST`]    ?? '127.0.0.1',
+                port:           parseInt(env[`${prefix}RCON_PORT`] ?? '28016', 10),
+                password:       env[`${prefix}RCON_PASS`]    ?? '',
             },
-            maxPlayers:      parseInt(env[`${prefix}MAX_PLAYERS`] ?? '100', 10),
-            activityType:    env[`${prefix}ACTIVITY`]     ?? 'Watching',
-            livechatChannelId: env[`${prefix}CHANNEL`]   ?? '',
+            maxPlayers:         parseInt(env[`${prefix}MAX_PLAYERS`] ?? '100', 10),
+            activityType:       env[`${prefix}ACTIVITY`]     ?? 'Watching',
+            livechatChannelId:  env[`${prefix}CHANNEL`]      ?? '',
         };
     }
 
@@ -160,48 +153,62 @@ const { servers, roles: globalRoles } = loadConfig();
 
 /**
  * @type {Map<string, {
- *   cfg:             object,
- *   client:          Client,
- *   rcon:            Rcon|null,
- *   rconConnected:   boolean,
- *   reconnectTimer:  ReturnType<typeof setTimeout>|null,
- *   currentPlayers:  number,
- *   maxPlayers:      number,
- *   hostname:        string,
- *   mapName:         string,
- *   players:         Array<{steamId:string, name:string, ping:number}>,
- *   online:          boolean,
- *   livechatChannel: import('discord.js').TextChannel|null,
+ *   cfg:              object,
+ *   client:           Client,
+ *   ws:               WebSocket|null,
+ *   rconConnected:    boolean,
+ *   reconnectTimer:   ReturnType<typeof setTimeout>|null,
+ *   nextId:           number,
+ *   pending:          Map<number, Function>,
+ *   currentPlayers:   number,
+ *   maxPlayers:       number,
+ *   hostname:         string,
+ *   mapName:          string,
+ *   players:          Array<{steamId:string, name:string, ping:number}>,
+ *   online:           boolean,
+ *   livechatChannel:  import('discord.js').TextChannel|null,
  * }>}
  */
 const state      = new Map();
 const pollTimers = new Map();
 
 // ─────────────────────────────────────────────────────────────────────────────
-// RCON
+// WebSocket RCON
 // ─────────────────────────────────────────────────────────────────────────────
+//
+// Rust's WebSocket RCON protocol:
+//   • Connect to  ws://<host>:<port>/<password>
+//   • Send JSON:  { "Identifier": <int>, "Message": "<command>", "Type": "Request" }
+//   • Receive JSON:
+//       - Console output:  { "Identifier": <int>, "Message": "<text>", "Type": "Generic" }
+//       - Chat messages:   { "Identifier": -1,    "Message": "...",    "Type": "Chat"    }
+//       - All server log lines are pushed as unsolicited messages with Identifier == -1
+//
 
-const RECONNECT_MS  = 10_000;
-const POLL_MS       = 60_000;
+const RECONNECT_MS = 10_000;
+const POLL_MS      = 60_000;
 
 // BrainChat emits:  [CHAT] DisplayName: message
-const CHAT_REGEX    = /^\[CHAT\] (.+?): (.+)$/;
+const CHAT_REGEX = /^\[CHAT\] (.+?): (.+)$/;
 
-async function connectRcon(serverId) {
+function connectRcon(serverId) {
     const s = state.get(serverId);
     if (!s) return;
 
-    // Clean up existing connection
-    if (s.rcon) {
-        try { s.rcon.end(); } catch (_) {}
-        s.rcon = null;
+    // Clean up existing socket
+    if (s.ws) {
+        try { s.ws.terminate(); } catch (_) {}
+        s.ws = null;
     }
 
     const { host, port, password } = s.cfg.rcon;
-    const rcon = new Rcon({ host, port, password, timeout: 5000 });
+    const url = `ws://${host}:${port}/${encodeURIComponent(password)}`;
 
-    rcon.on('authenticated', () => {
-        console.log(`[${serverId}] RCON authenticated`);
+    console.log(`[${serverId}] Connecting WebSocket RCON → ${host}:${port}`);
+    const ws = new WebSocket(url, { handshakeTimeout: 5000 });
+
+    ws.on('open', () => {
+        console.log(`[${serverId}] WebSocket RCON connected`);
         s.rconConnected = true;
         s.online        = true;
         if (s.reconnectTimer) { clearTimeout(s.reconnectTimer); s.reconnectTimer = null; }
@@ -209,30 +216,30 @@ async function connectRcon(serverId) {
         startPolling(serverId);
     });
 
-    rcon.on('end', () => {
-        console.log(`[${serverId}] RCON disconnected`);
+    ws.on('message', raw => {
+        let frame;
+        try { frame = JSON.parse(raw); } catch (_) { return; }
+        handleRconFrame(serverId, frame);
+    });
+
+    ws.on('close', () => {
+        console.log(`[${serverId}] WebSocket RCON closed`);
         s.rconConnected = false;
         s.online        = false;
+        s.ws            = null;
         updatePresence(serverId);
+        // Reject any in-flight pending commands
+        for (const [, reject] of s.pending) reject(new Error('RCON disconnected'));
+        s.pending.clear();
         scheduleReconnect(serverId);
     });
 
-    rcon.on('error', err => {
-        console.error(`[${serverId}] RCON error: ${err.message}`);
+    ws.on('error', err => {
+        console.error(`[${serverId}] WebSocket RCON error: ${err.message}`);
+        // 'close' fires right after 'error', so reconnect is handled there
     });
 
-    rcon.on('message', line => handleRconLine(serverId, line));
-
-    try {
-        await rcon.connect();
-        s.rcon = rcon;
-    } catch (err) {
-        console.error(`[${serverId}] RCON connect failed: ${err.message}`);
-        s.rconConnected = false;
-        s.online        = false;
-        updatePresence(serverId);
-        scheduleReconnect(serverId);
-    }
+    s.ws = ws;
 }
 
 function scheduleReconnect(serverId) {
@@ -246,20 +253,63 @@ function scheduleReconnect(serverId) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// RCON line parser
+// Frame handler
 // ─────────────────────────────────────────────────────────────────────────────
 
-function handleRconLine(serverId, line) {
-    if (!line || typeof line !== 'string') return;
+function handleRconFrame(serverId, frame) {
+    const { Identifier: id, Message: msg, Type: type } = frame;
 
-    // Strip Rust timestamp prefix:  "12:34:56 | ..."
-    const stripped = line.replace(/^\d{2}:\d{2}:\d{2} \| /, '').trim();
-
-    const chatMatch = CHAT_REGEX.exec(stripped);
-    if (chatMatch) {
-        const [, playerName, message] = chatMatch;
-        sendChatToDiscord(serverId, playerName, message);
+    // Resolve a pending command promise
+    const s = state.get(serverId);
+    if (s && id > 0 && s.pending.has(id)) {
+        const resolve = s.pending.get(id);
+        s.pending.delete(id);
+        resolve(msg ?? '');
+        return; // Don't double-process command responses
     }
+
+    // Unsolicited server log lines (Identifier == -1) — look for [CHAT] prefix
+    if (typeof msg === 'string') {
+        // Strip Rust timestamp prefix:  "12:34:56 | ..."
+        const stripped = msg.replace(/^\d{2}:\d{2}:\d{2} \| /, '').trim();
+        const chatMatch = CHAT_REGEX.exec(stripped);
+        if (chatMatch) {
+            const [, playerName, message] = chatMatch;
+            sendChatToDiscord(serverId, playerName, message);
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RCON send — returns a Promise that resolves with the response string
+// ─────────────────────────────────────────────────────────────────────────────
+
+function rconSend(serverId, cmd) {
+    const s = state.get(serverId);
+    if (!s?.rconConnected || !s.ws || s.ws.readyState !== WebSocket.OPEN) {
+        return Promise.resolve('');
+    }
+
+    return new Promise((resolve, reject) => {
+        const id = s.nextId++;
+        s.pending.set(id, resolve);
+
+        const frame = JSON.stringify({ Identifier: id, Message: cmd, Type: 'Request' });
+        s.ws.send(frame, err => {
+            if (err) {
+                s.pending.delete(id);
+                reject(err);
+            }
+        });
+
+        // Safety timeout — resolve with empty string after 10 s
+        setTimeout(() => {
+            if (s.pending.has(id)) {
+                s.pending.delete(id);
+                resolve('');
+            }
+        }, 10_000);
+    });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -275,63 +325,52 @@ function startPolling(serverId) {
 
 async function pollPlayerCount(serverId) {
     const s = state.get(serverId);
-    if (!s?.rconConnected || !s.rcon) return;
+    if (!s?.rconConnected) return;
     try {
-        const res = await s.rcon.send('status');
-        parseStatus(serverId, res);
-        updatePresence(serverId);
+        const res = await rconSend(serverId, 'status');
+        if (res) {
+            parseStatus(serverId, res);
+            updatePresence(serverId);
+        }
     } catch (_) {}
 }
 
 /**
- * Parses the full output of the `status` RCON command.
+ * Parses the output of the `status` RCON command.
  *
- * Example output:
- *   hostname: Rusty Noobs US Main Testing 1 | Whitelist Only
- *   version : 2625 secure (...)
+ * Example:
+ *   hostname: Rusty Noobs US Main
  *   map     : Procedural Map
  *   players : 1 (5 max) (0 queued) (0 joining)
- *   id                name  ping connected addr      owner violation kicks entityId
- *   76561198xxxxxxxxx "DHL" 125  76.62422s IP        0     0         0     ID
+ *   76561198xxx "DHL" 125 76.62422s IP 0 0 0 ID
  */
 function parseStatus(serverId, raw) {
     const s = state.get(serverId);
     if (!s || !raw) return;
 
-    // hostname
     const hostnameMatch = raw.match(/^hostname\s*:\s*(.+)$/m);
     if (hostnameMatch) s.hostname = hostnameMatch[1].trim();
 
-    // map
     const mapMatch = raw.match(/^map\s*:\s*(.+)$/m);
     if (mapMatch) s.mapName = mapMatch[1].trim();
 
-    // players : 1 (5 max) (0 queued) (0 joining)
     const playersMatch = raw.match(/^players\s*:\s*(\d+)\s*\((\d+)\s+max\)/m);
     if (playersMatch) {
         s.currentPlayers = parseInt(playersMatch[1], 10);
-        // Only override maxPlayers from status if not set in config
-        if (!s.cfg.maxPlayers) s.maxPlayers = parseInt(playersMatch[2], 10);
-        else                   s.maxPlayers  = s.cfg.maxPlayers;
+        s.maxPlayers     = s.cfg.maxPlayers || parseInt(playersMatch[2], 10);
     }
 
-    // Player rows — everything after the header line
-    // Header:  id  name  ping  connected  addr  owner  violation  kicks  entityId
-    // Row:     STEAMID "Name" PING TIME IP OWNER VIOLATION KICKS ENTITYID
     const playerRows = [];
     const lines      = raw.split('\n');
     let   pastHeader = false;
 
     for (const line of lines) {
         if (!pastHeader) {
-            // Detect the header row by looking for the column labels
             if (/^\s*id\s+name\s+ping/i.test(line)) { pastHeader = true; continue; }
             continue;
         }
         const trimmed = line.trim();
         if (!trimmed) continue;
-
-        // Row format: STEAMID "Player Name" PING REST...
         const rowMatch = trimmed.match(/^(\d{17})\s+"([^"]+)"\s+(\d+)/);
         if (rowMatch) {
             playerRows.push({
@@ -341,7 +380,6 @@ function parseStatus(serverId, raw) {
             });
         }
     }
-
     s.players = playerRows;
 }
 
@@ -363,7 +401,7 @@ function updatePresence(serverId) {
     } else {
         s.client.user.setPresence({
             status:     'online',
-            activities: [{ name: `${s.currentPlayers}/${s.maxPlayers ?? s.cfg.maxPlayers ?? '?'} Players`, type: actType }]
+            activities: [{ name: `${s.currentPlayers}/${s.maxPlayers ?? '?'} Players`, type: actType }]
         });
     }
 }
@@ -395,8 +433,6 @@ async function sendChatToDiscord(serverId, playerName, message) {
 
 async function sendDiscordToGame(serverId, member, message) {
     const role    = resolveHighestRole(member);
-    // Prefer server nickname → global display name → username
-    // Spaces replaced with underscores (plugin splits args on spaces)
     const user    = (member?.nickname || member?.user?.globalName || member?.user?.username || 'Unknown')
                         .replace(/ /g, '_');
     const safeMsg = message.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
@@ -405,7 +441,7 @@ async function sendDiscordToGame(serverId, member, message) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Role resolution (global roles list)
+// Role resolution
 // ─────────────────────────────────────────────────────────────────────────────
 
 function resolveHighestRole(member) {
@@ -414,20 +450,6 @@ function resolveHighestRole(member) {
         if (member.roles.cache.has(r.discordRoleId)) return r.label;
     }
     return 'Member';
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// RCON send helper
-// ─────────────────────────────────────────────────────────────────────────────
-
-async function rconSend(serverId, cmd) {
-    const s = state.get(serverId);
-    if (!s?.rconConnected || !s.rcon) return;
-    try {
-        await s.rcon.send(cmd);
-    } catch (err) {
-        console.error(`[${serverId}] RCON send failed: ${err.message}`);
-    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -475,9 +497,11 @@ async function setupBot(serverId, cfg) {
     state.set(serverId, {
         cfg,
         client,
-        rcon:            null,
+        ws:              null,
         rconConnected:   false,
         reconnectTimer:  null,
+        nextId:          1,
+        pending:         new Map(),   // id → resolve fn
         currentPlayers:  0,
         maxPlayers:      cfg.maxPlayers ?? 100,
         hostname:        cfg.name ?? serverId,
@@ -505,7 +529,7 @@ async function setupBot(serverId, cfg) {
 
         updatePresence(serverId);
         await registerSlashCommands(serverId);
-        await connectRcon(serverId);
+        connectRcon(serverId);   // Note: not awaited — connection is async/event-driven
     });
 
     // ── Discord message → Game ───────────────────────────────────────────────
@@ -539,12 +563,11 @@ async function setupBot(serverId, cfg) {
             try { member = await interaction.guild.members.fetch(interaction.user.id); } catch (_) {}
         }
 
-        const role = resolveHighestRole(member);
-        const user = (interaction.member?.nickname
-                   || interaction.user?.globalName
-                   || interaction.user?.username
-                   || 'Unknown').replace(/ /g, '_');
-
+        const role    = resolveHighestRole(member);
+        const user    = (interaction.member?.nickname
+                      || interaction.user?.globalName
+                      || interaction.user?.username
+                      || 'Unknown').replace(/ /g, '_');
         const safeMsg = message.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
         const cmd     = `brainchat.discord ${role} ${user} ${safeMsg}`;
 
@@ -598,11 +621,12 @@ async function main() {
         await setupBot(id, cfg);
     }
 }
+
 process.on('SIGINT', async () => {
     console.log('\nShutting down...');
     for (const [id, s] of state.entries()) {
         if (pollTimers.has(id)) clearInterval(pollTimers.get(id));
-        if (s.rcon)   try { s.rcon.end();          } catch (_) {}
+        if (s.ws)     try { s.ws.terminate();       } catch (_) {}
         if (s.client) try { await s.client.destroy(); } catch (_) {}
     }
     process.exit(0);
