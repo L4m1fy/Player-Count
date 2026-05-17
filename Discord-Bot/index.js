@@ -440,12 +440,33 @@ async function setupBot(serverId, cfg) {
         const safeMsg = message.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
         const cmd     = `brainchat.discord ${role} ${user} ${safeMsg}`;
 
+        const unix = Math.floor(Date.now() / 1000);
+        const discordMsg = `<t:${unix}:t> **${user}**: ${message}`;
+
         if (targetId === 'all') {
             const targets = [...state.keys()];
-            for (const id of targets) await rconSend(id, cmd);
+            for (const id of targets) {
+                await rconSend(id, cmd);
+                const s = state.get(id);
+                if (s?.livechatChannel) {
+                    try {
+                        await s.livechatChannel.send(discordMsg);
+                    } catch (err) {
+                        console.error(`[${id}] Failed to send to Discord:`, err.message);
+                    }
+                }
+            }
             await interaction.editReply({ content: `Sent to **all ${targets.length} server(s)**` });
         } else {
             await rconSend(targetId, cmd);
+            const s = state.get(targetId);
+            if (s?.livechatChannel) {
+                try {
+                    await s.livechatChannel.send(discordMsg);
+                } catch (err) {
+                    console.error(`[${targetId}] Failed to send to Discord:`, err.message);
+                }
+            }
             await interaction.editReply({ content: `Sent to **${servers[targetId]?.name ?? targetId}**` });
         }
     });
