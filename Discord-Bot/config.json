@@ -1,29 +1,38 @@
 {
-  "api": {
-    "ip": "0.0.0.0",
-    "port": 65004
-  },
+  "_comment": "This file is OPTIONAL. All values can be set via environment variables instead (preferred for Dokploy/Docker). See the top of index.js for the full ENV layout.",
+
+  "roles": [
+    { "discordRoleId": "111111111111111111", "label": "Owner"  },
+    { "discordRoleId": "222222222222222222", "label": "Admin"  },
+    { "discordRoleId": "333333333333333333", "label": "Mod"    },
+    { "discordRoleId": "444444444444444444", "label": "VIP"    },
+    { "discordRoleId": "555555555555555555", "label": "Member" }
+  ],
+
   "servers": {
     "server1": {
       "name": "2x Duo Royalty",
-      "discordToken": "YOUR_DISCORD_BOT_TOKEN_1",
-      "hmacSecret": "your_secret_key_1",
-      "maxPlayers": 50,
-      "activityType": "Watching"
+      "discordToken": "YOUR_BOT_TOKEN_1",
+      "rcon": {
+        "host": "127.0.0.1",
+        "port": 28016,
+        "password": "your_rcon_password"
+      },
+      "maxPlayers": 100,
+      "activityType": "Watching",
+      "livechatChannelId": "YOUR_CHANNEL_ID"
     },
     "server2": {
       "name": "PvP Arena",
-      "discordToken": "YOUR_DISCORD_BOT_TOKEN_2",
-      "hmacSecret": "your_secret_key_2",
-      "maxPlayers": 100,
-      "activityType": "Playing"
-    },
-    "server3": {
-      "name": "Modded Server",
-      "discordToken": "YOUR_DISCORD_BOT_TOKEN_3",
-      "hmacSecret": "your_secret_key_3",
-      "maxPlayers": 75,
-      "activityType": "Watching"
+      "discordToken": "YOUR_BOT_TOKEN_2",
+      "rcon": {
+        "host": "127.0.0.1",
+        "port": 28017,
+        "password": "your_rcon_password_2"
+      },
+      "maxPlayers": 50,
+      "activityType": "Playing",
+      "livechatChannelId": "YOUR_SECOND_CHANNEL_ID"
     }
   }
 }

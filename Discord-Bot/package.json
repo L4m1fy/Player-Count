@@ -1,14 +1,14 @@
 {
-  "name": "rust-discord-bot",
+  "name": "rustbridge-bot",
   "version": "1.0.0",
-  "description": "Discord bot for Rust server player count",
+  "description": "RCON-based Discord bot for Rust — LiveChat, player count, server status.",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "discord.js": "^14.13.0",
-    "express": "^4.18.2",
-    "nodemon": "^3.0.2"
+    "discord.js": "^14.15.0",
+    "rcon-client": "^4.2.4",
+    "express": "^4.18.2"
   }
 }
