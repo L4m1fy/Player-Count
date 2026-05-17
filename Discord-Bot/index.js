@@ -1,61 +1,3 @@
-/*
- * ============================================================================
- *
- *    ##:::::::'##::::::::'##::::'##::::'##:::'########:'##:::'##:
- *    ##::::::: ##:::'##:: ###::'###::'####::: ##.....::. ##:'##::
- *    ##::::::: ##::: ##:: ####'####::.. ##::: ##::::::::. ####:::
- *    ##::::::: ##::: ##:: ## ### ##:::: ##::: ######:::::. ##::::
- *    ##::::::: #########: ##. #: ##:::: ##::: ##...::::::: ##::::
- *    ##:::::::...... ##:: ##:.:: ##:::: ##::: ##:::::::::: ##::::
- *    ########::::::: ##:: ##:::: ##::'######: ##:::::::::: ##::::
- *    ........::::::::..:::..:::::..:::......::..::::......::..::::
- *
- * ============================================================================
- *
- *                  [ RustBridge Bot - by L4m1fy - v1.2.0 ]
- *
- * ============================================================================
- *
- * CHANGES v1.2.0:
- *  - Replaced rcon-client (TCP) with WebSocket RCON (ws package).
- *    Rust's WebSocket RCON sends/receives JSON frames:
- *      { Identifier: <int>, Message: "<cmd>", Type: "Request" }   ← send
- *      { Identifier: <int>, Message: "<output>", Type: "Generic"|"Chat" } ← recv
- *  - Authentication is done via the ws URL:
- *      ws://<host>:<port>/<password>
- *  - All other behaviour (livechat, polling, reconnect, Discord bridge) is
- *    unchanged.
- *
- * ============================================================================
- *
- * ENVIRONMENT VARIABLES (Dokploy / Docker):
- * ─────────────────────────────────────────
- *
- * GLOBAL ROLES (shared across all servers, highest priority first):
- *
- *   ROLES_JSON='[
- *     {"discordRoleId":"111111111111111111","label":"Owner"},
- *     {"discordRoleId":"222222222222222222","label":"Admin"},
- *     {"discordRoleId":"333333333333333333","label":"Mod"},
- *     {"discordRoleId":"444444444444444444","label":"VIP"},
- *     {"discordRoleId":"555555555555555555","label":"Member"}
- *   ]'
- *
- * PER-SERVER (replace N with 1, 2, 3 ...):
- *
- *   SERVER_1_ID=server1                    — unique key
- *   SERVER_1_NAME=2x Duo Royalty           — display name
- *   SERVER_1_TOKEN=your_discord_bot_token
- *   SERVER_1_RCON_HOST=127.0.0.1
- *   SERVER_1_RCON_PORT=28016
- *   SERVER_1_RCON_PASS=your_rcon_password
- *   SERVER_1_MAX_PLAYERS=100
- *   SERVER_1_ACTIVITY=Watching             — Watching | Playing | Listening
- *   SERVER_1_CHANNEL=discord_channel_id   — livechat channel
- *
- * ============================================================================
- */
-
 'use strict';
 
 const fs   = require('fs');
@@ -66,10 +8,6 @@ const {
     REST, Routes, SlashCommandBuilder, EmbedBuilder
 } = require('discord.js');
 const WebSocket = require('ws');
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Config loading — env-first, config.json as fallback
-// ─────────────────────────────────────────────────────────────────────────────
 
 function loadConfig() {
     let fileCfg = { servers: {}, roles: [] };
@@ -147,35 +85,9 @@ function parseServersFromEnv() {
 
 const { servers, roles: globalRoles } = loadConfig();
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Per-server runtime state
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * @type {Map<string, {
- *   cfg:              object,
- *   client:           Client,
- *   ws:               WebSocket|null,
- *   rconConnected:    boolean,
- *   reconnectTimer:   ReturnType<typeof setTimeout>|null,
- *   nextId:           number,
- *   pending:          Map<number, Function>,
- *   currentPlayers:   number,
- *   maxPlayers:       number,
- *   hostname:         string,
- *   mapName:          string,
- *   players:          Array<{steamId:string, name:string, ping:number}>,
- *   online:           boolean,
- *   livechatChannel:  import('discord.js').TextChannel|null,
- * }>}
- */
 const state      = new Map();
 const pollTimers = new Map();
 
-// ─────────────────────────────────────────────────────────────────────────────
-// WebSocket RCON
-// ─────────────────────────────────────────────────────────────────────────────
-//
 // Rust's WebSocket RCON protocol:
 //   • Connect to  ws://<host>:<port>/<password>
 //   • Send JSON:  { "Identifier": <int>, "Message": "<command>", "Type": "Request" }
@@ -183,12 +95,10 @@ const pollTimers = new Map();
 //       - Console output:  { "Identifier": <int>, "Message": "<text>", "Type": "Generic" }
 //       - Chat messages:   { "Identifier": -1,    "Message": "...",    "Type": "Chat"    }
 //       - All server log lines are pushed as unsolicited messages with Identifier == -1
-//
 
 const RECONNECT_MS = 10_000;
 const POLL_MS      = 60_000;
 
-// BrainChat emits:  [CHAT] DisplayName: message
 const CHAT_REGEX = /^\[CHAT\] (.+?): (.+)$/;
 
 function connectRcon(serverId) {
@@ -252,10 +162,6 @@ function scheduleReconnect(serverId) {
     }, RECONNECT_MS);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Frame handler
-// ─────────────────────────────────────────────────────────────────────────────
-
 function handleRconFrame(serverId, frame) {
     const { Identifier: id, Message: msg, Type: type } = frame;
 
@@ -279,10 +185,6 @@ function handleRconFrame(serverId, frame) {
         }
     }
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// RCON send — returns a Promise that resolves with the response string
-// ─────────────────────────────────────────────────────────────────────────────
 
 function rconSend(serverId, cmd) {
     const s = state.get(serverId);
@@ -312,10 +214,6 @@ function rconSend(serverId, cmd) {
     });
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Player count polling
-// ─────────────────────────────────────────────────────────────────────────────
-
 function startPolling(serverId) {
     if (pollTimers.has(serverId)) return;
     pollPlayerCount(serverId);
@@ -335,15 +233,7 @@ async function pollPlayerCount(serverId) {
     } catch (_) {}
 }
 
-/**
- * Parses the output of the `status` RCON command.
- *
- * Example:
- *   hostname: Rusty Noobs US Main
- *   map     : Procedural Map
- *   players : 1 (5 max) (0 queued) (0 joining)
- *   76561198xxx "DHL" 125 76.62422s IP 0 0 0 ID
- */
+
 function parseStatus(serverId, raw) {
     const s = state.get(serverId);
     if (!s || !raw) return;
@@ -383,10 +273,6 @@ function parseStatus(serverId, raw) {
     s.players = playerRows;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Discord presence
-// ─────────────────────────────────────────────────────────────────────────────
-
 function updatePresence(serverId) {
     const s = state.get(serverId);
     if (!s?.client?.user) return;
@@ -406,10 +292,6 @@ function updatePresence(serverId) {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Game → Discord
-// ─────────────────────────────────────────────────────────────────────────────
-
 async function sendChatToDiscord(serverId, playerName, message) {
     const s = state.get(serverId);
     if (!s?.livechatChannel) return;
@@ -424,10 +306,6 @@ async function sendChatToDiscord(serverId, playerName, message) {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Discord → Game
-// ─────────────────────────────────────────────────────────────────────────────
-
 async function sendDiscordToGame(serverId, member, message) {
     const role    = resolveHighestRole(member);
     const user    = (member?.nickname || member?.user?.globalName || member?.user?.username || 'Unknown')
@@ -437,10 +315,6 @@ async function sendDiscordToGame(serverId, member, message) {
     await rconSend(serverId, `brainchat.discord ${role} ${user} ${safeMsg}`);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Role resolution
-// ─────────────────────────────────────────────────────────────────────────────
-
 function resolveHighestRole(member) {
     if (!member?.roles?.cache) return 'Member';
     for (const r of globalRoles) {
@@ -448,10 +322,6 @@ function resolveHighestRole(member) {
     }
     return 'Member';
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Slash command registration
-// ─────────────────────────────────────────────────────────────────────────────
 
 async function registerSlashCommands(serverId) {
     const s = state.get(serverId);
@@ -488,10 +358,6 @@ async function registerSlashCommands(serverId) {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Bot setup
-// ─────────────────────────────────────────────────────────────────────────────
-
 async function setupBot(serverId, cfg) {
     const client = new Client({
         intents: [
@@ -509,7 +375,7 @@ async function setupBot(serverId, cfg) {
         rconConnected:   false,
         reconnectTimer:  null,
         nextId:          1,
-        pending:         new Map(),   // id → resolve fn
+        pending:         new Map(),   // id to resolve fn
         currentPlayers:  0,
         maxPlayers:      cfg.maxPlayers ?? 100,
         hostname:        cfg.name ?? serverId,
@@ -519,7 +385,6 @@ async function setupBot(serverId, cfg) {
         livechatChannel: null,
     });
 
-    // ── Ready ────────────────────────────────────────────────────────────────
     client.on(Events.ClientReady, async () => {
         console.log(`[${serverId}] Bot ready: ${client.user.tag}`);
 
@@ -537,10 +402,8 @@ async function setupBot(serverId, cfg) {
 
         updatePresence(serverId);
         await registerSlashCommands(serverId);
-        connectRcon(serverId);   // Note: not awaited — connection is async/event-driven
+        connectRcon(serverId);
     });
-
-    // ── Discord message → Game ───────────────────────────────────────────────
     client.on(Events.MessageCreate, async msg => {
         if (msg.author.bot) return;
         const s = state.get(serverId);
@@ -555,8 +418,6 @@ async function setupBot(serverId, cfg) {
 
         await sendDiscordToGame(serverId, member, msg.content.trim());
     });
-
-    // ── Slash commands ───────────────────────────────────────────────────────
     client.on(Events.InteractionCreate, async interaction => {
         if (!interaction.isChatInputCommand()) return;
         if (interaction.commandName !== 'send-to-game') return;
@@ -582,10 +443,10 @@ async function setupBot(serverId, cfg) {
         if (targetId === 'all') {
             const targets = [...state.keys()];
             for (const id of targets) await rconSend(id, cmd);
-            await interaction.editReply({ content: `✅ Sent to **all ${targets.length} server(s)**` });
+            await interaction.editReply({ content: `Sent to **all ${targets.length} server(s)**` });
         } else {
             await rconSend(targetId, cmd);
-            await interaction.editReply({ content: `✅ Sent to **${servers[targetId]?.name ?? targetId}**` });
+            await interaction.editReply({ content: `Sent to **${servers[targetId]?.name ?? targetId}**` });
         }
     });
 
@@ -598,10 +459,6 @@ async function setupBot(serverId, cfg) {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Utilities
-// ─────────────────────────────────────────────────────────────────────────────
-
 function findServerId(query) {
     if (servers[query]) return query;
     const lower = query.toLowerCase();
@@ -610,10 +467,6 @@ function findServerId(query) {
     }
     return null;
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Boot
-// ─────────────────────────────────────────────────────────────────────────────
 
 async function main() {
     console.log(`[RustBridge] Starting — ${Object.keys(servers).length} server(s), ${globalRoles.length} role(s)`);
