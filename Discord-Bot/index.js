@@ -402,10 +402,10 @@ async function setupBot(serverId, cfg) {
         if (targetId === 'all') {
             const targets = [...state.keys()];
             for (const id of targets) await rconSend(id, cmd);
-            await interaction.editReply({ content: `✅ Sent to **all ${targets.length} server(s)**` });
+            await interaction.editReply({ content: `Sent to **all ${targets.length} server(s)**` });
         } else {
             await rconSend(targetId, cmd);
-            await interaction.editReply({ content: `✅ Sent to **${servers[targetId]?.name ?? targetId}**` });
+            await interaction.editReply({ content: `Sent to **${servers[targetId]?.name ?? targetId}**` });
         }
     });
 
