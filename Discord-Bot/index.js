@@ -1,3 +1,5 @@
+
+
 'use strict';
 
 const fs   = require('fs');
@@ -9,15 +11,15 @@ const {
 } = require('discord.js');
 const WebSocket = require('ws');
 
+
+
 function loadConfig() {
     let fileCfg = { servers: {}, roles: [] };
     try {
         const raw = fs.readFileSync(path.join(__dirname, 'config.json'), 'utf8');
         fileCfg   = JSON.parse(raw);
         console.log('[Config] Loaded config.json as base');
-    } catch (_) {
-        console.log('[Config] No config.json found — using env only');
-    }
+    } catch (_) {console.log('[Config] No config.json found — using env only');}
 
     let roles = fileCfg.roles ?? [];
     if (process.env.ROLES_JSON) {
@@ -84,17 +86,10 @@ function parseServersFromEnv() {
 }
 
 const { servers, roles: globalRoles } = loadConfig();
-
 const state      = new Map();
 const pollTimers = new Map();
 
-// Rust's WebSocket RCON protocol:
-//   • Connect to  ws://<host>:<port>/<password>
-//   • Send JSON:  { "Identifier": <int>, "Message": "<command>", "Type": "Request" }
-//   • Receive JSON:
-//       - Console output:  { "Identifier": <int>, "Message": "<text>", "Type": "Generic" }
-//       - Chat messages:   { "Identifier": -1,    "Message": "...",    "Type": "Chat"    }
-//       - All server log lines are pushed as unsolicited messages with Identifier == -1
+
 
 const RECONNECT_MS = 10_000;
 const POLL_MS      = 60_000;
@@ -113,12 +108,9 @@ function connectRcon(serverId) {
 
     const { host, port, password } = s.cfg.rcon;
     const url = `ws://${host}:${port}/${encodeURIComponent(password)}`;
-
-    console.log(`[${serverId}] Connecting WebSocket RCON → ${host}:${port}`);
     const ws = new WebSocket(url, { handshakeTimeout: 5000 });
 
     ws.on('open', () => {
-        console.log(`[${serverId}] WebSocket RCON connected`);
         s.rconConnected = true;
         s.online        = true;
         if (s.reconnectTimer) { clearTimeout(s.reconnectTimer); s.reconnectTimer = null; }
@@ -133,21 +125,16 @@ function connectRcon(serverId) {
     });
 
     ws.on('close', () => {
-        console.log(`[${serverId}] WebSocket RCON closed`);
         s.rconConnected = false;
         s.online        = false;
         s.ws            = null;
         updatePresence(serverId);
-        // Reject any in-flight pending commands
         for (const [, reject] of s.pending) reject(new Error('RCON disconnected'));
         s.pending.clear();
         scheduleReconnect(serverId);
     });
 
-    ws.on('error', err => {
-        console.error(`[${serverId}] WebSocket RCON error: ${err.message}`);
-        // 'close' fires right after 'error', so reconnect is handled there
-    });
+    ws.on('error', err => {});
 
     s.ws = ws;
 }
@@ -155,7 +142,6 @@ function connectRcon(serverId) {
 function scheduleReconnect(serverId) {
     const s = state.get(serverId);
     if (!s || s.reconnectTimer) return;
-    console.log(`[${serverId}] Reconnecting in ${RECONNECT_MS / 1000}s...`);
     s.reconnectTimer = setTimeout(() => {
         s.reconnectTimer = null;
         connectRcon(serverId);
@@ -165,16 +151,13 @@ function scheduleReconnect(serverId) {
 function handleRconFrame(serverId, frame) {
     const { Identifier: id, Message: msg, Type: type } = frame;
 
-    // Resolve a pending command promise
     const s = state.get(serverId);
     if (s && id > 0 && s.pending.has(id)) {
         const resolve = s.pending.get(id);
         s.pending.delete(id);
         resolve(msg ?? '');
-        return; // Don't double-process command responses
+        return;
     }
-
-    // Unsolicited server log lines (Identifier == -1) — look for [CHAT] prefix
     if (typeof msg === 'string') {
         // Strip Rust timestamp prefix:  "12:34:56 | ..."
         const stripped = msg.replace(/^\d{2}:\d{2}:\d{2} \| /, '').trim();
@@ -203,8 +186,6 @@ function rconSend(serverId, cmd) {
                 reject(err);
             }
         });
-
-        // Safety timeout — resolve with empty string after 10 s
         setTimeout(() => {
             if (s.pending.has(id)) {
                 s.pending.delete(id);
@@ -232,7 +213,6 @@ async function pollPlayerCount(serverId) {
         }
     } catch (_) {}
 }
-
 
 function parseStatus(serverId, raw) {
     const s = state.get(serverId);
@@ -326,7 +306,6 @@ function resolveHighestRole(member) {
 async function registerSlashCommands(serverId) {
     const s = state.get(serverId);
 
-    // Build choices from all configured servers + an 'All servers' option
     const serverChoices = [
         { name: 'All servers', value: 'all' },
         ...Object.entries(servers).map(([id, cfg]) => ({
@@ -362,8 +341,6 @@ async function setupBot(serverId, cfg) {
     const client = new Client({
         intents: [
             GatewayIntentBits.Guilds,
-            GatewayIntentBits.GuildMessages,
-            GatewayIntentBits.MessageContent,
             GatewayIntentBits.GuildMembers,
         ]
     });
@@ -375,7 +352,7 @@ async function setupBot(serverId, cfg) {
         rconConnected:   false,
         reconnectTimer:  null,
         nextId:          1,
-        pending:         new Map(),   // id to resolve fn
+        pending:         new Map(),   // id → resolve fn
         currentPlayers:  0,
         maxPlayers:      cfg.maxPlayers ?? 100,
         hostname:        cfg.name ?? serverId,
@@ -386,7 +363,6 @@ async function setupBot(serverId, cfg) {
     });
 
     client.on(Events.ClientReady, async () => {
-        console.log(`[${serverId}] Bot ready: ${client.user.tag}`);
 
         if (cfg.livechatChannelId) {
             try {
@@ -396,35 +372,18 @@ async function setupBot(serverId, cfg) {
             } catch (err) {
                 console.error(`[${serverId}] Could not fetch livechat channel:`, err.message);
             }
-        } else {
-            console.warn(`[${serverId}] No livechat channel configured (SERVER_N_CHANNEL)`);
         }
-
         updatePresence(serverId);
         await registerSlashCommands(serverId);
         connectRcon(serverId);
     });
-    client.on(Events.MessageCreate, async msg => {
-        if (msg.author.bot) return;
-        const s = state.get(serverId);
-        if (!s?.livechatChannel) return;
-        if (msg.channelId !== cfg.livechatChannelId) return;
-        if (!msg.content?.trim()) return;
 
-        let member = msg.member;
-        if (!member && msg.guild) {
-            try { member = await msg.guild.members.fetch(msg.author.id); } catch (_) {}
-        }
-
-        await sendDiscordToGame(serverId, member, msg.content.trim());
-    });
     client.on(Events.InteractionCreate, async interaction => {
         if (!interaction.isChatInputCommand()) return;
         if (interaction.commandName !== 'send-to-game') return;
 
         const message  = interaction.options.getString('message', true);
-        const targetId = interaction.options.getString('server', true); // always set — choices are required
-
+        const targetId = interaction.options.getString('server', true);
         await interaction.deferReply({ ephemeral: true });
 
         let member = interaction.member;
@@ -440,34 +399,13 @@ async function setupBot(serverId, cfg) {
         const safeMsg = message.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
         const cmd     = `brainchat.discord ${role} ${user} ${safeMsg}`;
 
-        const unix = Math.floor(Date.now() / 1000);
-        const discordMsg = `<t:${unix}:t> **${user}**: ${message}`;
-
         if (targetId === 'all') {
             const targets = [...state.keys()];
-            for (const id of targets) {
-                await rconSend(id, cmd);
-                const s = state.get(id);
-                if (s?.livechatChannel) {
-                    try {
-                        await s.livechatChannel.send(discordMsg);
-                    } catch (err) {
-                        console.error(`[${id}] Failed to send to Discord:`, err.message);
-                    }
-                }
-            }
-            await interaction.editReply({ content: `Sent to **all ${targets.length} server(s)**` });
+            for (const id of targets) await rconSend(id, cmd);
+            await interaction.editReply({ content: `✅ Sent to **all ${targets.length} server(s)**` });
         } else {
             await rconSend(targetId, cmd);
-            const s = state.get(targetId);
-            if (s?.livechatChannel) {
-                try {
-                    await s.livechatChannel.send(discordMsg);
-                } catch (err) {
-                    console.error(`[${targetId}] Failed to send to Discord:`, err.message);
-                }
-            }
-            await interaction.editReply({ content: `Sent to **${servers[targetId]?.name ?? targetId}**` });
+            await interaction.editReply({ content: `✅ Sent to **${servers[targetId]?.name ?? targetId}**` });
         }
     });
 
@@ -490,8 +428,6 @@ function findServerId(query) {
 }
 
 async function main() {
-    console.log(`[RustBridge] Starting — ${Object.keys(servers).length} server(s), ${globalRoles.length} role(s)`);
-
     for (const [id, cfg] of Object.entries(servers)) {
         if (!cfg.discordToken) { console.warn(`[${id}] Missing TOKEN — skipping`); continue; }
         if (!cfg.rcon?.host)   { console.warn(`[${id}] Missing RCON host — skipping`); continue; }
